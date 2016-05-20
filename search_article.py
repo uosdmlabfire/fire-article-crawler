@@ -16,127 +16,194 @@ from datetime import datetime, timedelta, date
 # Requests
 # daum 뉴스 검색 : 화재
 
+# host_search(20)
+HOST_LIST = ['경향신문', '국민일보', '뉴스1', '뉴시스', '동아일보', '로이터', '문화일보', '세계일보', '조선일보', '중앙일보', '채널A', '한겨레', '한국일보', 'JTBC', 'KBS', 'MBN', 'YTN', '뉴스와이어', '뉴시스와이어', '연합뉴스 보도자료']
+
+# search date option
+START_DATE = date(2010, 1, 1)
+END_DATE = date(2016, 1, 1)
+
+# query
+QUERY_WORDS = '화재 -삼성화재 -동부화재 -메리츠화재'
+
 # date range function
 def daterange(start_date, end_date):
     for n in range(int ((end_date - start_date).days)):
         yield start_date + timedelta(n)
 
-#media_search
-media_list = ['경향신문', '국민일보', '뉴스1', '뉴시스', '동아일보','로이터','문화일보', '세계일보', '연합뉴스', '조선일보','중앙일보', '채널A', '한겨레', '한국일보', 'JTBC', 'KBS', 'MBC', 'MBN','SBS', 'YTN', '뉴스와이어', '뉴시스와이어', '연합뉴스 보도자료']
-# 검색 날짜 조건
-start_date = date(2015, 1, 2)
-end_date = date(2016, 1, 1)
+# make url with date, query option
+def make_url(date):
+    target_date = date.strftime("%Y%m%d")
+    next_date = (date + timedelta(1)).strftime("%Y%m%d")
+    query = urllib.parse.quote_plus(QUERY_WORDS)
+    # article's url must have &cluster=n
+    url = 'http://search.daum.net/search?w=news&cluster=n&nil_search=btn&DA=NTB&enc=utf8'+ '&sd='+target_date+ '&ed='+target_date+ '&q=' + query
+    return url
 
-# 검색어
-SEARCH_WORD = '화재 -삼성화재 -동부화재 -메리츠화재'
+# get page html
+def get_html(url):
+    # requests
+    data = requests.get(url)
+    # get html
+    html = bs4.BeautifulSoup(data.text)
+    return html
 
-# 크롤링한 기사수
-count = 0
-
-for single_date in daterange(start_date, end_date):
-
-    target_date = single_date.strftime("%Y%m%d")
-    next_date = (single_date + timedelta(1)).strftime("%Y%m%d")
-    query = urllib.parse.quote_plus(SEARCH_WORD)
-
-    # 화재, 뉴스 / 반드시 관련기사 닫기 &cluster=n 으로 검색해야된다!!
-    BASE_URL = 'http://search.daum.net/search?w=news&cluster=n&nil_search=btn&DA=NTB&enc=utf8'+ '&sd='+target_date+ '&ed='+next_date+ '&q=' + query
-
-    data = requests.get(BASE_URL)
-
-    # Parsing ( totalCount )
-    data = bs4.BeautifulSoup(data.text)
-
-    # 다른 방식으로 total_count 얻어오기
-    # total_count = data.find("span", attrs={'id': 'resultCntArea'})
-
-
-    try :
-        match = re.search("totalCount: [0-9]+", data.text)
-        total_count = int(match.group(0).split("totalCount: ")[1])
-    except Exception as e:
-        print(e)
-        print("target_date : "+ target_date)
-        break
-
-    # Calc Pages
-    # 1 페이지당 10개의 기사가 보여진다.c
-    # 예, 23개의 기사일 경우 3페이지까지 있다.
+# calculate the number of pages
+# one page contains 10 articles
+# (ex)13 articles need 2 pages
+def page_count(html):
+    total_count = html.find("span", attrs={'id': 'resultCntArea'})
+    total_count = [int(s) for s in re.findall('\d+', total_count.text)][2]
     pages = total_count / 10 + 1
+    return pages
 
-    # Parsing Articles per Page
-    for page in range(1, int(pages)+1):
-        TARGET_URL = BASE_URL + "&p=" + str(page)
+# get article list
+def get_article_list(html):
+    articles = html.find("div", attrs={'id': 'newsColl'})
+    articles = articles.findAll("div", attrs={'class': 'cont_inner'})
+    return articles
 
+# reshape date to "%Y-%m-%d" format
+def reshape_date(date):
+    # ~시간전, ~분전, ~초전 시간 고치기
+    if re.search('전', date):
+        if re.search('시간', date):
+            date = datetime.now() - timedelta(hours=int(date.split("시간")[0]))
+            date = date.strftime("%Y-%m-%d")
+        elif re.search('분', date):
+            date = datetime.now() - timedelta(minutes=int(date.split("분")[0]))
+            date = date.strftime("%Y-%m-%d")
+        elif re.search('초', date):
+            date = datetime.now() - timedelta(seconds=int(date.split("초")[0]))
+            date = date.strftime("%Y-%m-%d")
+    else:
+        date = datetime.strptime(date, "%Y.%m.%d")
+        date = date.strftime("%Y-%m-%d")
+    return date
+
+# get article's maintext of html by host
+def get_maintext(page, host):
+    content = bs4.BeautifulSoup(page.content)
+
+    body = None
+    if host == "경향신문": body = content.find("div", attrs={'class': 'art_body'})
+    elif host == '뉴스1': body = content.find("div", attrs={'id': 'articles_detail'})
+    elif host in ('뉴시스', '동아일보', '국민일보'): body = content.find("div", attrs={'id': 'articleBody'})
+    elif host == '문화일보': body = content.find("div", attrs={'id': 'NewsAdContent'})
+    elif host == '세계일보': body = content.find("div", attrs={'id': 'article_txt'})
+    elif host == '채널A': body = content.find("div", attrs={'class': 'article'})
+    elif host == '조선일보': body = content.find("div", attrs={'class': 'par'})
+    elif host == '중앙일보': body = content.find("div", attrs={'id': 'article_body'})
+    elif host == '한겨레': body = content.find("div", attrs={'class': 'article-text'})
+    elif host == '한국일보': body = content.find("article", attrs={'id': 'article-body'})
+    elif host == 'JTBC': body = content.find("div", attrs={'id': 'articlebody'})
+    elif host == 'KBS': body = content.find("div", attrs={'id': 'cont_newstext'})
+    elif host == 'MBN': body = content.find("div", attrs={'id': 'newsViewArea'})
+    elif host == 'YTN': body = content.find("div", attrs={'class': 'article_paragraph'})
+    elif host in ('로이터', '연합뉴스 보도자료', '뉴스와이', '뉴시스와이어'): body = content.find("div", attrs={'id': 'dmcfContents'})
+    # 다음 뉴스 홈페이지에 올라온 기사일 수 있다
+    if body is None: body = content.find("div", attrs={'id': 'dmcfContents'})
+    if body is None: body = content.find("body")
+
+    return body.text
+
+# write data to UTF-8 by ensure_ascii option
+def write_data(date, data):
+    with open("./out_article/fire_article/"+date+".json", 'a+') as outfile:
+        json.dump(data, outfile, ensure_ascii=False)
+        outfile.write("\n")
+
+def main():
+    # the number of articles
+    count = 0
+
+    # get search result page per day
+    for single_date in daterange(START_DATE, END_DATE + timedelta(1)):
+
+        # get result page's url of one target day
+        base_url = make_url(single_date)
+
+        # get the number of pages
         try:
-            data = requests.get(TARGET_URL)
+            result_html = get_html(base_url)
+            pages = page_count(result_html)
         except Exception as e:
             print(e)
-        data = bs4.BeautifulSoup(data.text)
+            print(base_url)
+            continue
 
-        try:
-            articles = data.findAll("div", attrs={'class': 'cont_inner'})
-        except Exception as e:
-            print(e)
-            print(TARGET_URL)
+        # parsing articles per page
+        for page in range(1, int(pages)+1):
 
-        for article in articles:
+            # get one page's url (article's option is '&p=')
+            target_url = base_url + "&p=" + str(page)
 
-            # date와 media 부분 추출
-            date_and_media = str(article.findAll("span", attrs={'class': 'date'})[0])
-
-            # media를 추출해서 media_list에 있는지 확인, 없으면 다음 기사 추출
-            media = date_and_media.split("\n")[2].split("</span>")[1].strip()
-            if media not in media_list:
-                continue
-
-
-            title_and_link = article.findAll("a")[0]
-            title = title_and_link.text
-            link = title_and_link["href"]
-
-            # 시간 추출
-            date = date_and_media.split("\n")[1]
-
-            # ~시간전, ~분전, ~초전  시간 고치기
-            if re.search('전', date):
-                if re.search('시간',date):
-                    date = datetime.now() - timedelta(hours=int(date.split("시간")[0]))
-                    date = date.strftime("%Y-%m-%d")
-                elif re.search('분',date):
-                    date = datetime.now() - timedelta(minutes=int(date.split("분")[0]))
-                    date = date.strftime("%Y-%m-%d")
-                elif re.search('초',date):
-                    date = datetime.now() - timedelta(seconds=int(date.split("초")[0]))
-                    date = date.strftime("%Y-%m-%d")
-            else:
-                date = datetime.strptime(date, "%Y.%m.%d")
-                date = date.strftime("%Y-%m-%d")
-
-            #본문 html 가져오기
-            # get blog_html
+            #get article list
             try:
-                article_content = requests.get(link.encode('utf-8'))
-                article_content.encoding = article_content.apparent_encoding
+                page_html = get_html(target_url)
+                articles = get_article_list(page_html)
             except Exception as e:
                 print(e)
-                print(link)
-                continue
-
-            #file에 입력할 하나의 article date
-            article_data = {"query": SEARCH_WORD, "title": title, "link": link, "date": date, "media": media, "content": article_content.text.strip()}
-
-            count += 1
-
-            # ensure_ascii 옵션으로 UTF-8 ( 한글로 보이도록 ) 출력한다.
-            try:
-                with open("article_data/fire_article.json", 'a') as outfile:
-                    json.dump(article_data, outfile, ensure_ascii=False)
-                    outfile.write("\n")
-            except Exception as e:
-                print(e)
-                print("link: " + link)
+                print(target_url)
                 continue
 
 
-            print("date : " + target_date + " / count : " + str(count))
+            for article in articles:
+
+                # get article's date and host
+                date_and_host = str(article.findAll("span", attrs={'class': 'date'})[0])
+
+                # get article in major media
+                host = date_and_host.split("\n")[2].split("</span>")[1].strip()
+                if host not in HOST_LIST:
+                    continue
+
+                # get article's title and link
+                title_and_link = article.findAll("a")[0]
+                title = title_and_link.text
+                link = title_and_link["href"]
+
+                # get article's date
+                date = date_and_host.split("\n")[1]
+                # reshape date to "%Y-%m-%d" format
+                date = reshape_date(date)
+
+                # get blog's original html
+                try:
+                    # requests
+                    article_page = requests.get(link)
+                    # set article encoding
+                    article_page.encoding = article_page.apparent_encoding
+                    article_html = article_page.text.strip()
+                except Exception as e:
+                    print(e)
+                    print(link)
+                    continue
+
+                # get article's maintext
+                try:
+                    article_main =get_maintext(article_page, host)
+                except Exception as e:
+                    article_main = 0
+                    print(e)
+                    print(link)
+
+                # one article data to write
+                article_data = {"query": QUERY_WORDS, "title": title, "link": link, "date": date,
+                                "content": article_html, "host": host, "body": article_main}
+
+                # write data
+                try:
+                    write_data(date, article_data)
+                except Exception as e:
+                    print(e)
+                    print(link)
+                    continue
+
+                # count number of articles that wrote to file
+                count += 1
+                print("date : " + single_date.strftime("%Y%m%d") + " / count : " + str(count))
+
+
+if __name__ == '__main__':
+    main()
